@@ -1,0 +1,24 @@
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+credentials/
+service_account.json
+credentials.json
+token.json
+
+# IDE and logs
+.vscode/
+.idea/
+*.log
+
+# Generated files
+*.xlsx
+*.csv
