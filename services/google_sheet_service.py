@@ -1,6 +1,7 @@
 
 import re
-
+import os
+from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
 
@@ -12,9 +13,12 @@ class GoogleSheetService:
         "https://www.googleapis.com/auth/drive.file"
     ]
 
-    B1_SPREADSHEET_ID = "12R6ILw-yAq5wjptHtEq2eCTPWm5efYSUyz00udnd4wU"
-    B2_SPREADSHEET_ID = "1ovC-4v_U5naf3UZGd1RhPn5RULu8yZlxbiXX9Bl27as"
 
+
+    load_dotenv()
+
+    B1_SPREADSHEET_ID = os.getenv("B1_SPREADSHEET_ID")
+    B2_SPREADSHEET_ID = os.getenv("B2_SPREADSHEET_ID")
     def __init__(self):
         """Initialize the authenticated Google Sheets client."""
 
