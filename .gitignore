@@ -22,3 +22,9 @@ token.json
 # Generated files
 *.xlsx
 *.csv
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+credentials/service_account.json

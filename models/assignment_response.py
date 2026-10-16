@@ -21,7 +21,7 @@ class StudentAssignmentData(BaseModel):
 
 class AssignmentResponse(BaseModel):
    success_flag:bool
-   course_name:str
+   batch_name:str
    start_week:int
    end_week:int
    student_info:StudentAssignmentData| None=None
