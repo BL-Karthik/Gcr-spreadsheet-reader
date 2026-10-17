@@ -3,6 +3,7 @@ import os
 import re
 import time
 import random
+
 from collections import defaultdict
 from datetime import datetime
 
@@ -10,11 +11,13 @@ from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from gspread.exceptions import APIError
 
+
 load_dotenv()
 
 
 def execute_with_retry(operation, max_retries=5):
     """Retry Google API requests when write quota is exceeded."""
+
     for attempt in range(max_retries):
         try:
             return operation()
@@ -23,7 +26,7 @@ def execute_with_retry(operation, max_retries=5):
             status_code = getattr(
                 getattr(exc, "response", None),
                 "status_code",
-                None
+                None,
             )
 
             if status_code != 429:
@@ -35,9 +38,10 @@ def execute_with_retry(operation, max_retries=5):
             delay = min(2 ** (attempt + 1), 32) + random.uniform(0, 1)
 
             print(
-                f"Google API quota exceeded. "
+                "Google API quota exceeded. "
                 f"Retrying in {delay:.1f} seconds..."
             )
+
             time.sleep(delay)
 
 
@@ -55,20 +59,26 @@ class ReportService:
             "drive",
             "v3",
             credentials=self.credentials,
-            cache_discovery=False
+            cache_discovery=False,
         )
+
+    # --------------------------------------------------
+    # 1. CHECK WHETHER AN ASSIGNMENT IS SUBMITTED
+    # --------------------------------------------------
 
     @staticmethod
     def is_submitted(status):
-        """
-        Count these statuses as submitted.
-        Change this set if your reporting rules differ.
-        """
+        """Return True for statuses counted as submitted."""
+
         return str(status or "").strip().lower() in {
             "submitted",
             "turned in",
-            "returned"
+            "returned",
         }
+
+    # --------------------------------------------------
+    # 2. SHORTEN COURSE NAME
+    # --------------------------------------------------
 
     @staticmethod
     def get_short_course_name(course_name):
@@ -78,12 +88,13 @@ class ReportService:
         becomes:
         B1P3-603C1
         """
+
         course_name = str(course_name).strip()
 
         match = re.match(
             r"^(B[12]P\d+-\d+)\s+(C\d+)",
             course_name,
-            re.IGNORECASE
+            re.IGNORECASE,
         )
 
         if match:
@@ -91,12 +102,14 @@ class ReportService:
 
         return course_name
 
+    # --------------------------------------------------
+    # 3. COLLECT ASSIGNMENT COLUMNS
+    # --------------------------------------------------
+
     @staticmethod
     def get_assignment_columns(students):
-        """
-        Collect unique assignment headers while preserving
-        the order in which they appear in the source data.
-        """
+        """Collect unique assignment headers while preserving order."""
+
         columns = []
         seen = set()
 
@@ -110,8 +123,13 @@ class ReportService:
 
         return columns
 
+    # --------------------------------------------------
+    # 4. BUILD A STUDENT ROW
+    # --------------------------------------------------
+
     def build_student_row(self, student, assignment_columns):
-        """Build a student's row for a course worksheet."""
+        """Build one student's row for a course worksheet."""
+
         statuses = student.get("assignment_statuses", {})
 
         total = len(assignment_columns)
@@ -132,10 +150,10 @@ class ReportService:
             student.get("roll_number", ""),
             student.get("student_name", ""),
             f"{submitted}/{total}",
-            f"{percentage:g}%"
+            f"{percentage:g}%",
         ]
 
-        # Preserve each original assignment status.
+        # Preserve the original status of every assignment.
         row.extend(
             statuses.get(column, "")
             for column in assignment_columns
@@ -143,27 +161,35 @@ class ReportService:
 
         return row
 
+    # --------------------------------------------------
+    # 5. WRITE DATA AND FORMAT A WORKSHEET
+    # --------------------------------------------------
+
     @staticmethod
     def write_rows(worksheet, rows):
-        """
-        Write worksheet data, then combine header formatting
-        and freeze-pane settings into one batch request.
-        """
+        """Write worksheet data and format the header."""
+
         if not rows:
             return
 
-        col_count = len(rows[0])
+        col_count = max(len(row) for row in rows)
 
-        # One request to write the data.
+        # Ensure every row has the same number of columns.
+        normalized_rows = [
+            row + [""] * (col_count - len(row))
+            for row in rows
+        ]
+
+        # Write the worksheet data.
         execute_with_retry(
             lambda: worksheet.update(
                 range_name="A1",
-                values=rows,
-                value_input_option="RAW"
+                values=normalized_rows,
+                value_input_option="RAW",
             )
         )
 
-        # One batch request for formatting and freezing.
+        # Format the header and freeze the first row.
         requests = [
             {
                 "repeatCell": {
@@ -172,21 +198,21 @@ class ReportService:
                         "startRowIndex": 0,
                         "endRowIndex": 1,
                         "startColumnIndex": 0,
-                        "endColumnIndex": col_count
+                        "endColumnIndex": col_count,
                     },
                     "cell": {
                         "userEnteredFormat": {
                             "textFormat": {
-                                "bold": True
+                                "bold": True,
                             },
-                            "wrapStrategy": "WRAP"
-                        }
+                            "wrapStrategy": "WRAP",
+                        },
                     },
                     "fields": (
                         "userEnteredFormat.textFormat.bold,"
                         "userEnteredFormat.wrapStrategy"
-                    )
-                }
+                    ),
+                },
             },
             {
                 "updateSheetProperties": {
@@ -194,15 +220,15 @@ class ReportService:
                         "sheetId": worksheet.id,
                         "gridProperties": {
                             "frozenRowCount": 1,
-                            "frozenColumnCount": min(2, col_count)
-                        }
+                            "frozenColumnCount": min(2, col_count),
+                        },
                     },
                     "fields": (
                         "gridProperties.frozenRowCount,"
                         "gridProperties.frozenColumnCount"
-                    )
-                }
-            }
+                    ),
+                },
+            },
         ]
 
         execute_with_retry(
@@ -211,26 +237,29 @@ class ReportService:
             )
         )
 
+    # --------------------------------------------------
+    # 6. GENERATE THE REPORT
+    # --------------------------------------------------
+
     def export_course_data_to_sheet(
         self,
         all_course_data,
         start_week,
         end_week,
         batch_name=None,
-        share_with_email=None
+        share_with_email=None,
+        all_course_names=None,
     ):
         """
         Create a report in the configured Shared Drive.
 
-        Sheets created:
-        1. Summary: one row per student and an overall row.
-        2. One worksheet per course with individual assignment statuses.
-        """
+        Creates:
+        1. Summary worksheet.
+        2. One worksheet for every selected course.
 
-        if not all_course_data:
-            raise ValueError(
-                "No student data available to export."
-            )
+        all_course_names contains all source course tab names.
+        Courses with no student records are still included.
+        """
 
         if start_week < 1 or end_week < start_week:
             raise ValueError("Invalid week range.")
@@ -238,6 +267,15 @@ class ReportService:
         if not self.shared_drive_folder_id:
             raise ValueError(
                 "GOOGLE_SHARED_DRIVE_FOLDER_ID is missing from .env."
+            )
+
+        all_course_names = all_course_names or []
+
+        # Continue allowing the report when source courses exist
+        # but no student records were collected.
+        if not all_course_data and not all_course_names:
+            raise ValueError(
+                "No course or student data available to export."
             )
 
         batch = (batch_name or "B1_B2").strip().upper()
@@ -249,8 +287,9 @@ class ReportService:
         )
 
         # --------------------------------------------------
-        # 1. Create spreadsheet in the Shared Drive
+        # 6A. CREATE THE SPREADSHEET IN THE SHARED DRIVE
         # --------------------------------------------------
+
         try:
             created_file = self.drive_service.files().create(
                 body={
@@ -258,10 +297,10 @@ class ReportService:
                     "mimeType": (
                         "application/vnd.google-apps.spreadsheet"
                     ),
-                    "parents": [self.shared_drive_folder_id]
+                    "parents": [self.shared_drive_folder_id],
                 },
                 supportsAllDrives=True,
-                fields="id,name,webViewLink"
+                fields="id,name,webViewLink",
             ).execute()
 
         except Exception as exc:
@@ -270,15 +309,26 @@ class ReportService:
                 f"Google API error: {exc}"
             ) from exc
 
-        spreadsheet = self.client.open_by_key(
-            created_file["id"]
-        )
+        spreadsheet = self.client.open_by_key(created_file["id"])
+
+        print(f"Created report: {title}")
+        print(f"Report spreadsheet ID: {created_file['id']}")
 
         # --------------------------------------------------
-        # 2. Group records by course
+        # 6B. GROUP ALL SOURCE COURSES
         # --------------------------------------------------
+
         courses = defaultdict(list)
 
+        # Register every selected source course first.
+        # This ensures courses without student records are included.
+        for course_name in all_course_names:
+            course_name = str(course_name).strip()
+
+            if course_name:
+                courses[course_name]
+
+        # Add collected student records to their courses.
         for student in all_course_data:
             course_name = (
                 str(student.get("course_name", "")).strip()
@@ -287,9 +337,19 @@ class ReportService:
 
             courses[course_name].append(student)
 
+        print(f"Total courses included: {len(courses)}")
+        print(f"Total student-course records: {len(all_course_data)}")
+
+        for course_name, students in sorted(courses.items()):
+            print(
+                f"Course: {course_name} | "
+                f"Students: {len(students)}"
+            )
+
         # --------------------------------------------------
-        # 3. Build the Summary worksheet
+        # 6C. BUILD THE SUMMARY WORKSHEET
         # --------------------------------------------------
+
         summary = spreadsheet.sheet1
 
         execute_with_retry(
@@ -301,7 +361,7 @@ class ReportService:
             "# Roll Number",
             "Student Name",
             "Submissions",
-            "Percentage"
+            "Percentage",
         ]
 
         summary_rows = [summary_headers]
@@ -323,27 +383,25 @@ class ReportService:
             for student in students:
                 student_row = self.build_student_row(
                     student,
-                    assignment_columns
+                    assignment_columns,
                 )
 
-                summary_rows.append([
-                    short_course_name,
-                    student_row[0],
-                    student_row[1],
-                    student_row[2],
-                    student_row[3]
-                ])
-
-                statuses = student.get(
-                    "assignment_statuses", {}
+                summary_rows.append(
+                    [
+                        short_course_name,
+                        student_row[0],
+                        student_row[1],
+                        student_row[2],
+                        student_row[3],
+                    ]
                 )
+
+                statuses = student.get("assignment_statuses", {})
 
                 for column in assignment_columns:
                     batch_total += 1
 
-                    if self.is_submitted(
-                        statuses.get(column, "")
-                    ):
+                    if self.is_submitted(statuses.get(column, "")):
                         batch_submitted += 1
 
         overall_percentage = (
@@ -352,13 +410,15 @@ class ReportService:
             else 0.0
         )
 
-        summary_rows.append([
-            "OVERALL",
-            "",
-            "",
-            f"{batch_submitted}/{batch_total}",
-            f"{overall_percentage:g}%"
-        ])
+        summary_rows.append(
+            [
+                "OVERALL",
+                "",
+                "",
+                f"{batch_submitted}/{batch_total}",
+                f"{overall_percentage:g}%",
+            ]
+        )
 
         self.write_rows(summary, summary_rows)
 
@@ -367,12 +427,10 @@ class ReportService:
             f"{len(all_course_data)} student-course records"
         )
 
-        # Small pause before creating and writing course tabs.
-        time.sleep(1)
+        # --------------------------------------------------
+        # 6D. CREATE ONE WORKSHEET PER COURSE
+        # --------------------------------------------------
 
-        # --------------------------------------------------
-        # 4. Create one worksheet for each course
-        # --------------------------------------------------
         used_titles = {"summary"}
         course_tab_names = []
 
@@ -385,16 +443,16 @@ class ReportService:
 
             base_title = self.get_short_course_name(course_name)
 
-            # Remove characters prohibited in worksheet names.
+            # Remove characters prohibited in Google Sheets tab names.
             base_title = re.sub(
                 r"[\[\]:*?/\\]",
                 "_",
-                base_title
+                base_title,
             ).strip("'")
 
             base_title = base_title[:100] or "Course"
 
-            # Ensure unique worksheet names.
+            # Ensure worksheet titles are unique.
             sheet_title = base_title
             suffix = 2
 
@@ -409,13 +467,12 @@ class ReportService:
                 suffix += 1
 
             used_titles.add(sheet_title.casefold())
-            course_tab_names.append(sheet_title)
 
             headers = [
                 "# Roll Number",
                 "Student Name",
                 "Submissions",
-                "Percentage"
+                "Percentage",
             ] + assignment_columns
 
             rows = [headers]
@@ -424,20 +481,23 @@ class ReportService:
                 rows.append(
                     self.build_student_row(
                         student,
-                        assignment_columns
+                        assignment_columns,
                     )
                 )
 
-            # Creating the worksheet is a separate API request.
+            # Create the worksheet even when students is empty.
             worksheet = execute_with_retry(
-                lambda: spreadsheet.add_worksheet(
-                    title=sheet_title,
-                    rows=max(len(rows), 1),
-                    cols=max(len(headers), 1)
-                )
+                lambda title=sheet_title, rows_data=rows, cols_count=len(headers):
+                    spreadsheet.add_worksheet(
+                        title=title,
+                        rows=max(len(rows_data), 1),
+                        cols=max(cols_count, 1),
+                    )
             )
 
             self.write_rows(worksheet, rows)
+
+            course_tab_names.append(sheet_title)
 
             print(
                 f"Completed {sheet_title}: "
@@ -445,28 +505,33 @@ class ReportService:
                 f"{len(assignment_columns)} assignments"
             )
 
-            # Reduce request frequency between course tabs.
+            # Reduce the request frequency between course tabs.
             time.sleep(1)
 
         # --------------------------------------------------
-        # 5. Optionally share the report
+        # 6E. OPTIONALLY SHARE THE REPORT
         # --------------------------------------------------
+
         if share_with_email:
             execute_with_retry(
                 lambda: spreadsheet.share(
                     share_with_email,
                     perm_type="user",
-                    role="reader"
+                    role="reader",
                 )
             )
 
-            print(
-                f"Report shared with {share_with_email}"
-            )
+            print(f"Report shared with {share_with_email}")
 
         # --------------------------------------------------
-        # 6. Return report details to the API router
+        # 6F. RETURN REPORT DETAILS
         # --------------------------------------------------
+
+        tabs = ["Summary"] + course_tab_names
+
+        print(f"Expected report tabs: {len(tabs)}")
+        print(f"Course worksheets created: {len(course_tab_names)}")
+
         return {
             "report_name": title,
             "report_url": spreadsheet.url,
@@ -475,6 +540,6 @@ class ReportService:
             "start_week": start_week,
             "end_week": end_week,
             "batch": batch,
-            "tabs": ["Summary"] + course_tab_names,
-            "shared_with": share_with_email
+            "tabs": tabs,
+            "shared_with": share_with_email,
         }
